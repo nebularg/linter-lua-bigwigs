@@ -7,13 +7,19 @@ local modules = {}
 local module_colors = {}
 local module_sounds = {}
 
+local default_options = {
+	altpower = {ALTPOWER = true},
+	infobox = {INFOBOX = true},
+	proximity = {PROXIMITY = true},
+}
 local valid_colors = {
-	Positive = true, green = true,
-	Personal = true, blue = true,
-	Attention = true, yellow = true,
-	Urgent = true, orange = true,
-	Important = true, red = true,
-	Neutral = true, cyan = true,
+	green = true,
+	blue = true,
+	yellow = true,
+	orange = true,
+	red = true,
+	cyan = true,
+	purple = true,
 }
 local valid_sounds = {
 	Info = true, info = true,
@@ -24,6 +30,7 @@ local valid_sounds = {
 }
 local color_methods = {
 	Message = 2,
+	Message2 = 2,
 	TargetMessage = 3,
 	TargetMessage2 = 2,
 	TargetsMessage = 2,
@@ -40,13 +47,24 @@ local sound_methods = {
 local valid_methods = {
 	Bar = true,
 	CDBar = true,
-	CastBar = true,
+	CastBar = true, --"CASTBAR",
 	TargetBar = true,
-	PrimaryIcon = true,
-	SecondaryIcon = true,
-	Flash = true,
-	Say = true,
-	SayCountdown = true,
+	PersonalMessage = true,
+	PrimaryIcon = "ICON",
+	SecondaryIcon = "ICON",
+	Flash = "FLASH",
+	Say = "SAY",
+	SayCountdown = "SAY_COUNTDOWN",
+	OpenAltPower = "ALTPOWER",
+	CloseAltPower = "ALTPOWER",
+	OpenProximity = "PROXIMITY",
+	CloseProximity = "PROXIMITY",
+	OpenInfo = "INFOBOX",
+	SetInfoByTable = "INFOBOX",
+	SetInfoTitle = "INFOBOX",
+	SetInfo = "INFOBOX",
+	SetInfoBar = "INFOBOX",
+	CloseInfo = "INFOBOX",
 }
 for k in next, color_methods do valid_methods[k] = true end
 for k in next, sound_methods do valid_methods[k] = true end
@@ -106,6 +124,15 @@ local function unternary(str, pattern, validate_table)
 		end
 	end
 	return str
+end
+
+local function contains(t, v)
+	for _, value in next, t do
+		if value == v then
+			return true
+		end
+	end
+	return false
 end
 
 -- Removes some things that break simple comma splitting.
@@ -296,13 +323,21 @@ local function parseGetOptions(lines, start)
 
 	local success, result = pcall(loadstring(chunk))
 	if success then
-		local options = {}
+		local options, option_flags = {}, {}
 		for _, opt in next, result do
+			local flags = true
 			if type(opt) == "table" then
+				flags = {}
+				for i=2, #opt do
+					flags[opt[i]] = true
+				end
 				opt = opt[1]
 			end
 			if opt then -- marker option vars will be nil
-				options[opt] = true
+				if default_options[opt] then
+					flags = default_options[opt]
+				end
+				options[opt] = flags
 			end
 		end
 		return options
@@ -372,7 +407,7 @@ local function parseLua(file)
 	local file_name = file:match(".*/(.*)$") or file
 
 	local options, option_keys = {}, {}
-	local methods, registered_methods = {}, {}
+	local methods, registered_methods = {Win=true}, {}
 	local current_func = nil
 	local rep = {}
 	for n, line in ipairs(lines) do
@@ -380,7 +415,7 @@ local function parseLua(file)
 		line = line:gsub("%-%-.*$", "") -- strip comments
 
 		--- loadstring the options table
-		if line == "function mod:GetOptions()" then
+		if line == "function mod:GetOptions()" or line == "function mod:GetOptions(CL)" then
 			local opts, err = parseGetOptions(lines, n+1)
 			if not opts then
 				-- rip keys
@@ -388,6 +423,20 @@ local function parseLua(file)
 				-- return
 			else
 				option_keys = opts
+			end
+		end
+		local toggle_options = line:match("^mod%.toggleOptions = ({.+})")
+		if toggle_options then
+			local success, result = pcall(loadstring("return " .. toggle_options))
+			if success then
+				for _, opt in next, result do
+					if type(opt) == "table" then
+						opt = opt[1]
+					end
+					if opt then -- marker option vars will be nil
+						option_keys[opt] = true
+					end
+				end
 			end
 		end
 
@@ -407,7 +456,7 @@ local function parseLua(file)
 			end
 			for _, v in next, strsplit(spells) do
 				v = tonumber(v)
-				if option_keys[v] then
+				if not contains(options[callback], v) then
 					table.insert(options[callback], v)
 				end
 			end
@@ -447,6 +496,7 @@ local function parseLua(file)
 		res = line:match("^%s*local function%s+([%w_]+)%s*%(") or line:match("^%s*function%s+([%w_]+)%s*%(")
 		if res then
 			current_func = res
+			methods[res] = true
 			rep = {}
 			rep.local_func_key = findCalls(lines, n, current_func, options)
 		end
@@ -477,7 +527,7 @@ local function parseLua(file)
 		-- Check for function calls that will trigger a sound, including calls
 		-- delayed with ScheduleTimer.
 		if checkForAPI(line) then
-			local key, sound, color = nil, nil, nil
+			local key, sound, color, bitflag = nil, nil, nil, nil
 			local method, args = line:match("%w+:(.-)%(%s*(.+)%s*%)")
 			local offset = 0
 			if method == "ScheduleTimer" or method == "ScheduleRepeatingTimer" then
@@ -495,8 +545,14 @@ local function parseLua(file)
 				if color_index then
 					color = tablize(unternary(args[color_index+offset], "\"(.-)\"", valid_colors))
 					if method:sub(1, 6) == "Target" or method == "StackMessage" then
-						color[#color+1] = "Personal" -- used when on the player
+						color[#color+1] = "blue" -- used when on the player
 					end
+				end
+				if method == "PersonalMessage" then
+					color = {"blue"}
+				end
+				if valid_methods[method] ~= true then
+					bitflag = valid_methods[method]
 				end
 			end
 
@@ -548,6 +604,9 @@ local function parseLua(file)
 				local key = tonumber(k) or unquote(k)
 				if not option_keys[key] then
 					error(string.format("    %s:%d: Invalid key! func=%s, key=%s", file_name, n, f, key))
+					errors = true
+				elseif bitflag and (type(option_keys[key]) ~= "table" or not option_keys[key][bitflag]) then
+					error(string.format("    %s:%d: Missing %s flag! func=%s, key=%s", file_name, n, bitflag, f, key))
 					errors = true
 				end
 				keys[i] = key
